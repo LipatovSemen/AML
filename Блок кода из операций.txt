@@ -1,0 +1,155 @@
+<%
+Set CD=CreateObject("MDIALOG.CDIALOG")
+Set M=CreateObject("MMessages.UMessages")
+Set MS = CreateObject("MScripts.UScripts")
+
+  With CD
+    .Caption = "Проверка данных в АМЛ"
+    .FormName = "SDM$IBS_Add01"
+    .style = 16
+    .cmdCancel.Caption="Отмена"
+    .cmdOk.Caption="Установить"	
+
+    With .Group
+      .AddLabel .LabelConstr(True), "ID клиента"
+      .AddTextBox .ControlConstr(), "ID клиента", "vSubjId", vSubjId, 15, False, 8192
+
+ Set chkBox = .AddCheckBox(.ControlConstr(4, True), "SEARCH", "SEARCH", "Ручная проверка", 0)
+         set GrpBox = .AddGroup(.ControlConstr(1, True), 0)
+         with GrpBox 
+      
+	.AddLabel   .LabelConstr(True), "Наименование клиента" 
+      .AddTextBox .ControlConstr()  , "Наименование клиента", "USER_PARAM1", "", 2000, False, tbs
+	.AddLabel   .LabelConstr(True), "ИНН" 
+      .AddTextBox .ControlConstr()  , "ИНН", "USER_PARAM2", "", 12, False, 8192
+	.AddLabel   .LabelConstr(True), "Серия документа" 
+      .AddTextBox .ControlConstr()  , "Серия документа", "USER_PARAM3", "", 2000, False, tbs
+	.AddLabel   .LabelConstr(True), "Номер документа" 
+      .AddTextBox .ControlConstr()  , "Номер документа", "USER_PARAM4", "", 2000, False, tbs
+	.AddLabel   .LabelConstr(True), "Дата рождения" 
+      .AddDateTimePicker2 .ControlConstr() , "Дата рождения", "USER_PARAM5", "dd-mm-yyyy","", date_open,,0
+         End With
+
+      chkBox.LinkValue GrpBox, "Visible"         	
+
+    End With
+  
+	If Not .Exec Then Exit Sub
+        vSubjId=.Value("vSubjId")
+        SEARCH=.Value("SEARCH")
+        USER_PARAM1=.Value("USER_PARAM1")
+        USER_PARAM2=.Value("USER_PARAM2")
+        USER_PARAM3=.Value("USER_PARAM3")
+        USER_PARAM4=.Value("USER_PARAM4")
+        USER_PARAM5=.Value("USER_PARAM5")
+
+   End With
+
+
+
+IF SEARCH = 0 and len(vSubjId)>0 THEN
+#sql_smt{
+BEGIN
+GC.AML.SDM$SEND_AML_REQ_SUBJ(:vSubjID);
+END;
+
+SELECT DISTINCT 
+      RESPONSE_COUNT
+INTO :COUNT_S FROM GC.SDM$AML_CHECK_LOG L
+                  ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID;
+}
+END IF
+
+IF SEARCH = 0 and len(vSubjId)>0 AND COUNT_S > 0 THEN
+
+#sql_smt{
+select REGEXP_REPLACE(TO_CHAR(SYS_XMLAGG (XMLELEMENT (col,r.text || chr(13))).EXTRACT('/ROWSET/COL/text()').getclobval ()),'&quot;','') 
+INTO :RESULT_FOR_SUBJ
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID;
+}
+End IF
+IF SEARCH = 0 and len(vSubjId)>0 AND COUNT_S = 0 THEN 
+M.Okmsgbox "СОВПАДЕНИЙ НЕ НАЙДЕНО " , vbYes, "Проверка данных в АМЛ"
+End IF
+
+IF SEARCH = 0 and len(vSubjId)>0 AND COUNT_S > 0 THEN
+M.Okmsgbox RESULT_FOR_SUBJ , vbYes, "Проверка данных в АМЛ"
+End IF
+
+IF SEARCH = 1 and len(vSubjID)=0 THEN
+#sql_smt{
+DECLARE vRES varchar2(200);
+        pOBJID varchar2(12);
+BEGIN
+pOBJID := GC.AML_SEQ.NEXTVAL;
+GC.AML.sdm$send_aml_req(pi_name=> :USER_PARAM1
+                   , pi_inn=> :USER_PARAM2
+                   , pi_series=> :USER_PARAM3
+                   , pi_number=> :USER_PARAM4
+                   , pi_birthdate=> TO_CHAR(:USER_PARAM5,'DD.MM.YYYY')
+                   , vobjid=>pOBJID
+                   , vsubj_id=> null
+                   , po_id=> vRES);   
+END;
+
+SELECT DISTINCT 
+      RESPONSE_COUNT
+INTO :COUNT_S FROM GC.SDM$AML_CHECK_LOG L
+                  ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID;
+}
+END IF
+
+IF SEARCH = 1 and len(vSubjId)=0 AND COUNT_S > 0 THEN
+
+#sql_smt{
+select REGEXP_REPLACE(TO_CHAR(SYS_XMLAGG (XMLELEMENT (col,r.text || chr(13))).EXTRACT('/ROWSET/COL/text()').getclobval ()),'&quot;','') 
+INTO :RESULT_FOR_SUBJ
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID;
+}
+END IF
+IF SEARCH = 1 and len(vSubjId)=0 AND COUNT_S = 0 THEN 
+M.Okmsgbox "СОВПАДЕНИЙ НЕ НАЙДЕНО " , vbYes, "Проверка данных в АМЛ"
+End IF
+
+IF SEARCH = 1 and len(vSubjId)=0 AND COUNT_S > 0 THEN
+M.Okmsgbox RESULT_FOR_SUBJ , vbYes, "Проверка данных в АМЛ"
+End IF
+
+IF SEARCH = 0 and len(vSubjId)>0 AND COUNT_S > 0 THEN
+#sql_smt{
+begin
+gc.p_support.arm_start();
+gc.jour_pack.add_to_journal('HUMAN', :vSubjId, 'SDMAML', 'I', 'Проверка по спискам АМЛ', :RESULT_FOR_SUBJ, gc.genmessage('DOSSIER',119));
+Commit;
+end;
+}
+End IF
+
+IF SEARCH = 0 and len(vSubjId)>0 AND COUNT_S = 0 THEN
+#sql_smt{
+begin
+gc.p_support.arm_start();
+gc.jour_pack.add_to_journal('HUMAN', :vSubjId, 'SDMAML', 'I', 'Проверка по спискам АМЛ', 'Совпадение не найдено', gc.genmessage('DOSSIER',119));
+Commit;
+end;
+}
+End IF
+
+#sql_smt{
+commit;
+}
+%>
