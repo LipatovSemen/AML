@@ -1,0 +1,882 @@
+<%
+  SubjId = Request("SUBJ_ID")
+  ReadOnly = (Request("READONLY") = "Y") ' bool
+  G = Request("GROUP")
+  if ReadOnly then
+    buttonReadMod = &H800& ' Кнопка не активна, но видима
+  else
+    buttonReadMod = 0 ' Кнопка активная
+  end if
+
+  if len(SubjID)=0 then
+    buttonReadMod = &H800& ' Кнопка не активна, но видима
+  else
+    buttonReadMod = 0 ' Кнопка активная
+  end if
+
+  Set M = CreateObject("MScripts.UScripts")
+
+  Set GRP = M.Long2Obj(G)
+  RR = M.Obj2Long(Request)
+  VBCode = Request("VB_SOURCE")
+  With GRP
+    .AddButton .ControlConstr(0, True), "Проверка данных в АМЛ", "Проверка данных в АМЛ", "ButtonCheckAml", buttonReadMod, M, "ExecSqlVbEx", False, VBCode, "subCheckAml", RR
+    .AddButton .ControlConstr(0, True), "Печать протокола АМЛ", "Печать протокола АМЛ", "ButtonPrintAml", buttonReadMod, M, "ExecSqlVbEx", False, VBCode, "subPrintAml", RR
+  End With
+End Sub
+
+' Код, выполняемый по нажатию кнопки "Проверка данных в АМЛ"
+Sub subCheckAml
+  Set MU=CreateObject("MMessages.UMessages")
+  SubjId = Request("SUBJ_ID")
+
+#sql_smt{
+declare V_REQUEST UTL_HTTP.REQ;
+        MSGBOX_REQ VARCHAR2(30);
+        V_RESPONSE UTL_HTTP.RESP;
+begin
+      :MSGBOX_REQ := 'Доступ есть';
+V_REQUEST := UTL_HTTP.BEGIN_REQUEST(URL => 'http://192.168.111.114:8081/amlws/amlws', METHOD => 'POST');
+V_RESPONSE := UTL_HTTP.GET_RESPONSE(V_REQUEST);
+utl_http.end_response(V_RESPONSE);
+--Обязательно закрываем http, так как при чрезмерном количестве проверок будет возникать ошибка
+exception when utl_http.request_failed then 
+      :MSGBOX_REQ := 'Нет доступа';
+ --         when utl_http.too_many_requests then
+  ---    utl_http.end_response(V_RESPONSE);
+end;
+}
+
+IF MSGBOX_REQ = "Доступ есть" then
+
+  #sql_smt{ GC.AML.SDM$SEND_AML_REQ_SUBJ(:SubjID);
+--ПОСЧИТАЕМ ЧИСЛО ВХОЖДЕНИЙ В СПРАВОЧНИКИ
+SELECT DISTINCT 
+      RESPONSE_COUNT
+INTO :COUNT_S FROM GC.SDM$AML_CHECK_LOG L
+                  ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID;
+}
+
+' РЕЗУЛЬТАТ В ПЕРЕМЕННУЮ
+  #sql_smt{
+      select REGEXP_REPLACE(TO_CHAR(SYS_XMLAGG (XMLELEMENT (col,r.text || chr(13))).EXTRACT('/ROWSET/COL/text()').getclobval ()),'&quot;','') 
+INTO :RESULT_FOR_SUBJ
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID;
+}
+
+IF COUNT_S = 0 THEN 
+RESULT_FOR_SUBJ = "СОВПАДЕНИЙ НЕ НАЙДЕНО"
+END IF
+
+
+'MU.Okmsgbox RESULT_FOR_SUBJ & , vbYes, "Проверка данных в АМЛ"
+IF	MsgBox (RESULT_FOR_SUBJ & CHR(13) & CHR(13) & "ПЕЧАТАТЬ ОТЧЕТ?",vbYesNo+vbInformation+vbDefaultButton1, "Проверка по спискам АМЛ") = vbYes Then 
+#sql_smt{
+SELECT S.NAME
+      ,H.RNN
+      ,TO_CHAR(H.BIRTHDAY,'DD.MM.YYYY')
+      ,DECODE(CP.PASSPORTCODE,'8',SUBSTR(REPLACE(CP.SERNUM,' ',''),1,4),CP.SERNUM)
+      ,DECODE(CP.PASSPORTCODE,'8',SUBSTR(REPLACE(CP.SERNUM,' ',''),5,6),CP.SERNUM)
+      ,TO_CHAR(SYSDATE,'DD.MM.YYYY HH24:MI:SS') DATEPROV  
+INTO :PRINT_NAME 
+    ,:PRINT_INN
+    ,:PRINT_BIRTHDATE
+    ,:PRINT_SERIES
+    ,:PRINT_NUMBER
+    ,:DATEPROV
+FROM GC.SUBJ S
+    ,GC.HUMAN H 
+    ,GC.CLIENTPASSPORT CP 
+    ,GC.PASSPORT P
+WHERE S.ID = :SUBJID
+  AND H.SUBJ_ID (+)= S.ID
+  AND CP.SUBJ_ID(+)= S.ID
+  AND P.CODE(+)=CP.PASSPORTCODE
+          
+             AND P.PRIORITET=(SELECT MIN(PP.PRIORITET) 
+                  FROM GC.SUBJ SS,GC.CLIENTPASSPORT CPP,GC.PASSPORT PP 
+                  WHERE SS.ID=:SUBJID  --- СВЯЗКА С ID КЛИЕНТА (SUBJ.ID) 
+                              AND CPP.SUBJ_ID=SS.ID AND CPP.PASSPORTCODE=PP.CODE) ;
+}
+
+#sql_smt{
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'1','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK1
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '1';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'2','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK2
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '2';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'3','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK3
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '3';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'4','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK4
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '4';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'5','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK5
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '5';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'6','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK6
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '6';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'7','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK7
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '7';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'8','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK8
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '8';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'9','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK9
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '9';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'10','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK10
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '10';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'11','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK11
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '11';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'12','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK12
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '12';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'13','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK13
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '13';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'14','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK14
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '14';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'15','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK15
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '15';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'16','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK16
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '16';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'17','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK17
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '17';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'18','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK18
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '18';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'19','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK19
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '19';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'20','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK20
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '20';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'21','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK21
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '21';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'22','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK22
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '22';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'23','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK23
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '23';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'24','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK24
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '24';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'25','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK25
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '25';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'29','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK29
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '29';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-15','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_15
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-15';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-18','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_18
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-18';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-19','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_19
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-19';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-20','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_20
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-20';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-21','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_21
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-21';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-22','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_22
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-22';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-23','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_23
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-23';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-26','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_26
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-26';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-33','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_33
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = (SELECT MAX(TO_NUMBER(LL.OBJID)) FROM GC.SDM$AML_CHECK_LOG LL)
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-33';
+
+}
+
+dim path
+Set fso = CreateObject("Scripting.FileSystemObject")
+filename = "V:\reports\blocks\AML.dot"
+
+
+      
+Set wrdApp=CreateObject("Word.Application")
+Set wrddoc = wrdApp.Documents.add(filename)
+wrdapp.Selection.Find.Execute "<<NAME>>",,,,,,True,1,,PRINT_NAME,2
+wrdapp.Selection.Find.Execute "<<INN>>",,,,,,True,1,,PRINT_INN,2
+wrdapp.Selection.Find.Execute "<<SER>>",,,,,,True,1,,PRINT_SERIES,2
+wrdapp.Selection.Find.Execute "<<NUM>>",,,,,,True,1,,PRINT_NUMBER,2
+wrdapp.Selection.Find.Execute "<<BIRTHDATE>>",,,,,,True,1,,PRINT_BIRTHDATE,2
+wrdapp.Selection.Find.Execute "<<SYSDATE>>",,,,,,True,1,,DATEPROV,2
+
+wrdapp.Selection.Find.Execute "<<1>>",,,,,,True,1,,CHECK1,2
+wrdapp.Selection.Find.Execute "<<2>>",,,,,,True,1,,CHECK2,2
+wrdapp.Selection.Find.Execute "<<3>>",,,,,,True,1,,CHECK3,2
+wrdapp.Selection.Find.Execute "<<4>>",,,,,,True,1,,CHECK4,2
+wrdapp.Selection.Find.Execute "<<5>>",,,,,,True,1,,CHECK5,2
+wrdapp.Selection.Find.Execute "<<6>>",,,,,,True,1,,CHECK6,2
+wrdapp.Selection.Find.Execute "<<7>>",,,,,,True,1,,CHECK7,2
+wrdapp.Selection.Find.Execute "<<8>>",,,,,,True,1,,CHECK8,2
+wrdapp.Selection.Find.Execute "<<9>>",,,,,,True,1,,CHECK9,2
+wrdapp.Selection.Find.Execute "<<10>>",,,,,,True,1,,CHECK10,2
+wrdapp.Selection.Find.Execute "<<11>>",,,,,,True,1,,CHECK11,2
+wrdapp.Selection.Find.Execute "<<12>>",,,,,,True,1,,CHECK12,2
+wrdapp.Selection.Find.Execute "<<13>>",,,,,,True,1,,CHECK13,2
+wrdapp.Selection.Find.Execute "<<14>>",,,,,,True,1,,CHECK14,2
+wrdapp.Selection.Find.Execute "<<15>>",,,,,,True,1,,CHECK15,2
+wrdapp.Selection.Find.Execute "<<16>>",,,,,,True,1,,CHECK16,2
+wrdapp.Selection.Find.Execute "<<17>>",,,,,,True,1,,CHECK17,2
+wrdapp.Selection.Find.Execute "<<18>>",,,,,,True,1,,CHECK18,2
+wrdapp.Selection.Find.Execute "<<19>>",,,,,,True,1,,CHECK19,2
+wrdapp.Selection.Find.Execute "<<20>>",,,,,,True,1,,CHECK20,2
+wrdapp.Selection.Find.Execute "<<21>>",,,,,,True,1,,CHECK21,2
+wrdapp.Selection.Find.Execute "<<22>>",,,,,,True,1,,CHECK22,2
+wrdapp.Selection.Find.Execute "<<23>>",,,,,,True,1,,CHECK23,2
+wrdapp.Selection.Find.Execute "<<24>>",,,,,,True,1,,CHECK24,2
+wrdapp.Selection.Find.Execute "<<25>>",,,,,,True,1,,CHECK25,2
+wrdapp.Selection.Find.Execute "<<29>>",,,,,,True,1,,CHECK29,2
+wrdapp.Selection.Find.Execute "<<-15>>",,,,,,True,1,,CHECK_15,2
+wrdapp.Selection.Find.Execute "<<-18>>",,,,,,True,1,,CHECK_18,2
+wrdapp.Selection.Find.Execute "<<-19>>",,,,,,True,1,,CHECK_19,2
+wrdapp.Selection.Find.Execute "<<-20>>",,,,,,True,1,,CHECK_20,2
+wrdapp.Selection.Find.Execute "<<-21>>",,,,,,True,1,,CHECK_21,2
+wrdapp.Selection.Find.Execute "<<-22>>",,,,,,True,1,,CHECK_22,2
+wrdapp.Selection.Find.Execute "<<-23>>",,,,,,True,1,,CHECK_23,2
+wrdapp.Selection.Find.Execute "<<-26>>",,,,,,True,1,,CHECK_26,2
+wrdapp.Selection.Find.Execute "<<-26>>",,,,,,True,1,,CHECK_26,2
+wrdapp.Selection.Find.Execute "<<-33>>",,,,,,True,1,,CHECK_33,2
+
+wrddoc.ActiveWindow.Visible = True
+wrddoc.ActiveWindow.Document.PrintPreview
+
+End IF
+
+
+IF COUNT_S > 0 THEN
+#sql_smt{
+begin
+gc.p_support.arm_start();
+gc.jour_pack.add_to_journal('HUMAN', :SubjId, 'SDMAML', 'I', 'Проверка по спискам АМЛ', :RESULT_FOR_SUBJ, gc.genmessage('DOSSIER',119));
+end;
+}
+End IF
+
+IF COUNT_S = 0 THEN
+#sql_smt{
+begin
+gc.p_support.arm_start();
+gc.jour_pack.add_to_journal('HUMAN', :SubjId, 'SDMAML', 'I', 'Проверка по спискам АМЛ', 'Совпадение не найдено', gc.genmessage('DOSSIER',119));
+end;
+}
+End IF
+
+
+' Сохранить, чтобы записался результат в журнал. Commit ставить в этом блоке кода нельзя!!!!
+MU.Okmsgbox "СОХРАНИТЕ ДОСЬЕ!!!!", vbYes, "Проверка данных в АМЛ"
+else
+MU.Okmsgbox "Нет доступа к АМЛ", vbYes, "ОШИБКА"
+end if
+End Sub
+Sub subPrintAml
+Set MU=CreateObject("MMessages.UMessages")
+Set CD=CreateObject("MDIALOG.CDIALOG")
+SubjId = Request("SUBJ_ID")
+ With CD
+    .Caption = "Печать протокола АМЛ"
+    .FormName = "SDM$IBS_Add01"
+    .style = 16
+    .cmdCancel.Caption="Отмена"
+    .cmdOk.Caption="Установить"	
+    With .Group
+
+	.AddLabel   .LabelConstr(True), "Когда была проверка?" 
+        .AddDateTimePicker2 .ControlConstr() , "Когда была проверка?", "USER_PARAM1", "dd-mm-yyyy","", date_prov,,0
+    End With
+  
+	If Not .Exec Then Exit Sub
+        USER_PARAM1=.Value("USER_PARAM1")
+ End With
+
+
+set DS=#sql_cur{      select L.OBJID 
+                            ,TO_CHAR(L.EVENT_TIME,'DD/MM/YYYY HH24:MI:SS') EVENT_DATE
+
+                    FROM GC.SDM$AML_CHECK_LOG L
+           WHERE 1=1
+             AND L.SUBJ_ID = :SubjId 
+             AND L.RETMSG = 'Success'
+             AND TRUNC(L.EVENT_TIME) = TO_DATE(:USER_PARAM1,'DD/MM/YYYY')
+               }               
+
+        Attr_Value = SelectFromDynaset(0, "FormName", "Выберите время проверки", "Время:", DS, 30,"Время","EVENT_DATE",10,"OBJID в протоколе","OBJID","OBJID")
+
+OBJID=DS("OBJID")
+
+IF ATTR_VALUE = "True" THEN 
+
+#sql_smt{
+SELECT S.NAME
+      ,H.RNN
+      ,TO_CHAR(H.BIRTHDAY,'DD.MM.YYYY')
+      ,DECODE(CP.PASSPORTCODE,'8',SUBSTR(REPLACE(CP.SERNUM,' ',''),1,4),CP.SERNUM)
+      ,DECODE(CP.PASSPORTCODE,'8',SUBSTR(REPLACE(CP.SERNUM,' ',''),5,6),CP.SERNUM)
+--      ,TO_CHAR(SYSDATE,'DD.MM.YYYY HH24:MI:SS') DATEPROV  
+     ,(SELECT TO_CHAR(L.EVENT_TIME,'DD/MM/YYYY HH24:MI:SS') FROM GC.SDM$AML_CHECK_LOG L WHERE L.OBJID = :OBJID) DATEPROV  
+INTO :PRINT_NAME 
+    ,:PRINT_INN
+    ,:PRINT_BIRTHDATE
+    ,:PRINT_SERIES
+    ,:PRINT_NUMBER
+    ,:DATEPROV
+FROM GC.SUBJ S
+    ,GC.HUMAN H 
+    ,GC.CLIENTPASSPORT CP 
+    ,GC.PASSPORT P
+WHERE S.ID = :SUBJID
+  AND H.SUBJ_ID (+)= S.ID
+  AND CP.SUBJ_ID(+)= S.ID
+  AND P.CODE(+)=CP.PASSPORTCODE
+          
+             AND P.PRIORITET=(SELECT MIN(PP.PRIORITET) 
+                  FROM GC.SUBJ SS,GC.CLIENTPASSPORT CPP,GC.PASSPORT PP 
+                  WHERE SS.ID=:SUBJID  --- СВЯЗКА С ID КЛИЕНТА (SUBJ.ID) 
+                              AND CPP.SUBJ_ID=SS.ID AND CPP.PASSPORTCODE=PP.CODE) ;
+}
+
+#sql_smt{
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'1','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK1
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '1';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'2','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK2
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '2';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'3','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK3
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '3';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'4','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK4
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '4';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'5','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK5
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '5';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'6','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK6
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '6';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'7','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK7
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '7';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'8','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK8
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '8';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'9','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK9
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '9';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'10','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK10
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '10';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'11','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK11
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '11';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'12','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK12
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '12';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'13','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK13
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '13';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'14','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK14
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '14';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'15','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK15
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '15';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'16','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK16
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '16';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'17','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK17
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '17';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'18','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK18
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '18';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'19','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK19
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '19';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'20','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK20
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '20';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'21','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK21
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '21';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'22','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK22
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '22';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'23','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK23
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '23';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'24','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK24
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '24';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'25','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK25
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '25';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'29','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK29
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '29';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-15','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_15
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-15';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-18','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_18
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-18';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-19','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_19
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-19';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-20','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_20
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-20';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-21','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_21
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-21';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-22','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_22
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-22';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-23','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_23
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-23';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-26','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_26
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-26';
+select DISTINCT NVL(DECODE(R.TYPE_SPRAV,'-33','СОВПАДЕНИЕ!!!'),'Нет совпадений')
+INTO :CHECK_33
+                    FROM GC.SDM$AML_CHECK_LOG L
+                        ,GC.SDM$AML_CHECK_RES R 
+           WHERE 1=1
+             AND L.OBJID = :OBJID
+             AND R.OBJID(+)= L.OBJID
+             AND R.TYPE_SPRAV (+)= '-33';
+
+}
+
+dim path
+Set fso = CreateObject("Scripting.FileSystemObject")
+filename = "V:\reports\blocks\AML.dot"
+
+
+      
+Set wrdApp=CreateObject("Word.Application")
+Set wrddoc = wrdApp.Documents.add(filename)
+wrdapp.Selection.Find.Execute "<<NAME>>",,,,,,True,1,,PRINT_NAME,2
+wrdapp.Selection.Find.Execute "<<INN>>",,,,,,True,1,,PRINT_INN,2
+wrdapp.Selection.Find.Execute "<<SER>>",,,,,,True,1,,PRINT_SERIES,2
+wrdapp.Selection.Find.Execute "<<NUM>>",,,,,,True,1,,PRINT_NUMBER,2
+wrdapp.Selection.Find.Execute "<<BIRTHDATE>>",,,,,,True,1,,PRINT_BIRTHDATE,2
+wrdapp.Selection.Find.Execute "<<SYSDATE>>",,,,,,True,1,,DATEPROV,2
+
+wrdapp.Selection.Find.Execute "<<1>>",,,,,,True,1,,CHECK1,2
+wrdapp.Selection.Find.Execute "<<2>>",,,,,,True,1,,CHECK2,2
+wrdapp.Selection.Find.Execute "<<3>>",,,,,,True,1,,CHECK3,2
+wrdapp.Selection.Find.Execute "<<4>>",,,,,,True,1,,CHECK4,2
+wrdapp.Selection.Find.Execute "<<5>>",,,,,,True,1,,CHECK5,2
+wrdapp.Selection.Find.Execute "<<6>>",,,,,,True,1,,CHECK6,2
+wrdapp.Selection.Find.Execute "<<7>>",,,,,,True,1,,CHECK7,2
+wrdapp.Selection.Find.Execute "<<8>>",,,,,,True,1,,CHECK8,2
+wrdapp.Selection.Find.Execute "<<9>>",,,,,,True,1,,CHECK9,2
+wrdapp.Selection.Find.Execute "<<10>>",,,,,,True,1,,CHECK10,2
+wrdapp.Selection.Find.Execute "<<11>>",,,,,,True,1,,CHECK11,2
+wrdapp.Selection.Find.Execute "<<12>>",,,,,,True,1,,CHECK12,2
+wrdapp.Selection.Find.Execute "<<13>>",,,,,,True,1,,CHECK13,2
+wrdapp.Selection.Find.Execute "<<14>>",,,,,,True,1,,CHECK14,2
+wrdapp.Selection.Find.Execute "<<15>>",,,,,,True,1,,CHECK15,2
+wrdapp.Selection.Find.Execute "<<16>>",,,,,,True,1,,CHECK16,2
+wrdapp.Selection.Find.Execute "<<17>>",,,,,,True,1,,CHECK17,2
+wrdapp.Selection.Find.Execute "<<18>>",,,,,,True,1,,CHECK18,2
+wrdapp.Selection.Find.Execute "<<19>>",,,,,,True,1,,CHECK19,2
+wrdapp.Selection.Find.Execute "<<20>>",,,,,,True,1,,CHECK20,2
+wrdapp.Selection.Find.Execute "<<21>>",,,,,,True,1,,CHECK21,2
+wrdapp.Selection.Find.Execute "<<22>>",,,,,,True,1,,CHECK22,2
+wrdapp.Selection.Find.Execute "<<23>>",,,,,,True,1,,CHECK23,2
+wrdapp.Selection.Find.Execute "<<24>>",,,,,,True,1,,CHECK24,2
+wrdapp.Selection.Find.Execute "<<25>>",,,,,,True,1,,CHECK25,2
+wrdapp.Selection.Find.Execute "<<29>>",,,,,,True,1,,CHECK29,2
+wrdapp.Selection.Find.Execute "<<-15>>",,,,,,True,1,,CHECK_15,2
+wrdapp.Selection.Find.Execute "<<-18>>",,,,,,True,1,,CHECK_18,2
+wrdapp.Selection.Find.Execute "<<-19>>",,,,,,True,1,,CHECK_19,2
+wrdapp.Selection.Find.Execute "<<-20>>",,,,,,True,1,,CHECK_20,2
+wrdapp.Selection.Find.Execute "<<-21>>",,,,,,True,1,,CHECK_21,2
+wrdapp.Selection.Find.Execute "<<-22>>",,,,,,True,1,,CHECK_22,2
+wrdapp.Selection.Find.Execute "<<-23>>",,,,,,True,1,,CHECK_23,2
+wrdapp.Selection.Find.Execute "<<-26>>",,,,,,True,1,,CHECK_26,2
+wrdapp.Selection.Find.Execute "<<-33>>",,,,,,True,1,,CHECK_33,2
+
+wrddoc.ActiveWindow.Visible = True
+wrddoc.ActiveWindow.Document.PrintPreview
+
+End IF
+
+%>
